@@ -35,12 +35,16 @@ else
   echo "ℹ️  MP_ACR_ADDR 未设置——跳过 registry acr 登记（bootstrap 的 registry: acr 引用执行时会点名报错）"
 fi
 
-# 2) bootstrap 工作流（先删后建，图纸改了重跑本脚本即生效）
-curl -sk -X DELETE "$BASE/api/workflows/bootstrap" >/dev/null || true
-code=$(curl -sk -o /tmp/wf-resp.json -w '%{http_code}' -X POST "$BASE/api/workflows" \
+# 2) bootstrap 工作流（PUT 优先：全量替换图纸、任务档案不动——DELETE 前置会级联删掉
+#    bootstrap 的历史账本，改图纸不走那条；图纸不存在（404）才 POST 新建）
+code=$(curl -sk -o /tmp/wf-resp.json -w '%{http_code}' -X PUT "$BASE/api/workflows/bootstrap" \
   -H 'Content-Type: application/json' -d @"$DIR/bootstrap-workflow.json")
+if [ "$code" = "404" ]; then
+  code=$(curl -sk -o /tmp/wf-resp.json -w '%{http_code}' -X POST "$BASE/api/workflows" \
+    -H 'Content-Type: application/json' -d @"$DIR/bootstrap-workflow.json")
+fi
 [ "$code" = "200" ] || { echo "❌ ensure workflow bootstrap failed ($code): $(cat /tmp/wf-resp.json)"; exit 1; }
-echo "✅ bootstrap 图纸已落库"
+echo "✅ bootstrap 图纸已落库（PUT 更新或首次新建，历史档案无恙）"
 
 echo ""
 echo "执行前置清单（全部【需人工】）:"
