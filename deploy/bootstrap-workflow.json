@@ -1,0 +1,67 @@
+{
+  "name": "bootstrap",
+  "global_context": {
+    "GOPROXY": "goproxy.cn"
+  },
+  "stages": [
+    {
+      "name": "build",
+      "parallel": false,
+      "jobs": [
+        {
+          "name": "build-ci",
+          "type": "freestyle",
+          "spec": {
+            "image": "golang:1.27-alpine",
+            "timeout_minutes": 30,
+            "steps": [
+              {
+                "name": "toolchain",
+                "type": "shell",
+                "script": "sed -i 's#dl-cdn.alpinelinux.org#mirrors.aliyun.com#g' /etc/apk/repositories && apk add --no-cache git docker-cli docker-cli-buildx"
+              },
+              {
+                "name": "checkout",
+                "type": "git",
+                "repo": "https://github.com/Edward-258/mini-pipeline.git",
+                "branch": "master"
+              },
+              {
+                "name": "gate",
+                "type": "shell",
+                "script": "export GOPROXY={{.global.GOPROXY}} && go test ./..."
+              },
+              {
+                "name": "image",
+                "type": "docker_build",
+                "registry": "acr",
+                "image": "codepipeline-learning/mini-pipeline",
+                "tag": "bootstrap",
+                "dockerfile": "docker/engine.Dockerfile",
+                "context_dir": "."
+              }
+
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ship",
+      "parallel": false,
+      "jobs": [
+        {
+          "name": "selfdeploy",
+          "type": "deploy",
+          "deploy_spec": {
+            "env": "self",
+            "deployment_name": "mini-pipeline",
+            "container_name": "engine",
+            "image": "{{.build-ci.image_full}}",
+            "wait_rollout": false
+          }
+        }
+      ]
+    }
+  ]
+}

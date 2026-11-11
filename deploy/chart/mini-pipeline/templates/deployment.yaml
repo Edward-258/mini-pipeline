@@ -1,0 +1,74 @@
+{{- if .Values.tags.engine }}
+{{- $pullNames := list -}}
+{{- range .Values.imagePullSecrets -}}
+{{- $pullNames = append $pullNames .name -}}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mini-pipeline
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: mini-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mini-pipeline
+  template:
+    metadata:
+      labels:
+        app: mini-pipeline
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: engine
+          # 决断 #16 零痕迹：镜像源 = 部署期 --set 绑定（仓库里没有默认端点），required 守卫挡漏配
+          image: "{{ required "image.repo 未设置——部署期 --set image.repo=<registry>/<ns>/mini-pipeline（完整路径含镜像名，不含 tag）" .Values.image.repo }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- if .Values.connections.mongo.uri }}
+            - name: MONGO_URI
+              value: {{ .Values.connections.mongo.uri | quote }}   # 外部 mongo 整串直给
+            {{- else }}
+            - name: MONGO_HOST
+              value: "mongo.{{ .Release.Namespace }}.svc.cluster.local:27017"
+            - name: MONGO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-auth   # templates/secret.yaml 现场生成；config.go 组拼 URI（MONGO_URI 整串 env 可覆盖）
+                  key: password
+            {{- end }}
+            - name: K8S_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: K8S_CONTEXT
+              value: ""   # 集群内跑走 InClusterConfig；仅本机调试时才需要
+            - name: RUNNER_IMAGE
+              value: {{ required "runner.image 未设置——部署期 --set runner.image=<registry>/<namespace>/pipeline-runner:<tag>" .Values.runner.image | quote }}  # 步骤执行器宿体（引擎运行时创建的 Job Pod 用）
+            - name: BUILDKIT_REPLICAS
+              value: {{ .Values.buildkit.replicas | quote }}  # buildkit 副本数（引擎 fnv task 亲和的模数，决断 #15）
+            - name: MP_BK_MIRROR
+              value: {{ .Values.buildkit.mirror | quote }}  # buildkitd.toml mirror 段（引擎全量生成 toml + registry 白名单 reconcile，决断 #16）
+            {{- if $pullNames }}
+            - name: MP_PULL_SECRETS
+              value: {{ $pullNames | join "," | quote }}  # Job Pod 拉私有镜像凭证名单（与上面 imagePullSecrets 同款；build.go 注入）
+            {{- end }}
+            - name: MP_WORKSPACE_SHARED
+              value: {{ .Values.workspace.shared | quote }}  # 任务级共享工作区 PVC（决断 #17；false = 每 Job emptyDir 旧世界）
+            - name: MP_WORKSPACE_SIZE
+              value: {{ .Values.workspace.size | quote }}  # 工作区 PVC 容量声明（local-path 薄配置额不预占）
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources.engine | nindent 12 }}
+{{- end }}

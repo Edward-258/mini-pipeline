@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mini-pipeline
+description: 微型发布工作流引擎
+type: application
+version: 0.7.15  # 0.7.15：任务级共享工作区 PVC + 统一代码源（引擎 0.7.14：mp-ws-<wf>-<taskID> 卷生命周期升格为任务 + checkout stage 合成 + PodUnschedulable fail-fast）
+appVersion: "0.7.14"  # 与引擎镜像 tag 对齐；部署仍以 --set image.tag 显式覆盖为准（helm v3 不复用 --set）

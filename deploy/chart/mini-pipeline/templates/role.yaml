@@ -1,0 +1,33 @@
+{{- if .Values.tags.engine }}
+# 引擎对 K8s 的最小权限：本 namespace 里管 Job + 读 Pod/日志 + patch 工作负载（T2.2 deploy job）
+# （引擎以 SA 身份操作业务集群，权限最小化。
+#   ⚠️ deployments 权限是 deploy job 的硬前提，2026-11-05 T2.3 扩展；活体生效需人工 helm upgrade）
+#   集群级权限（env 随建 namespace，get/create）另见 clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.serviceAccount.name }}
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  # 决断 #16（registry 外部化）：buildkitd 白名单 = 运行时数据——引擎启动/registry CRUD 时
+  # 全量生成 buildkitd.toml 写回本 namespace 的 buildkitd-config CM
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "patch", "update"]
+  # 决断 #17（任务级共享工作区）：引擎建卷（首 job）/ 删卷（终态·取消·Recover 清扫）
+  # ——list 是 Recover 泄漏清扫的扫描面，get/create/delete 是 Ensure/Delete 的动词面
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "delete"]
+  # T2.2/T2.3：deploy job 直接 patch 目标 namespace 的 Deployment
+  # （StatefulSet/DaemonSet 一并放进来，后续重启类 job 免改 Role）
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+{{- end }}

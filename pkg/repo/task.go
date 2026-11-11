@@ -1,0 +1,241 @@
+package repo
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
+	"pipeline/pkg/models"
+)
+
+func CreateTask(t *models.WorkflowTask) error {
+	_, err := taskColl.InsertOne(context.TODO(), t)
+	return err
+}
+
+// FindTask —— 按 (workflow_name, task_id) 取整棵任务树。
+// 查询走 _id 自然键（"<wf>-<taskID>"，engine/task.go BuildTask 定死）——主键索引直达；
+// 复合字段查询没有索引 = 全表扫，而这是任务 API 的最高频读（详情 2s 轮询 + 各运维端点）。
+// "整棵读"是这套数据的唯一读法（聚合根访问模式），从不跨实体 JOIN
+func FindTask(workflowName string, taskID int64) (*models.WorkflowTask, error) {
+	var t models.WorkflowTask
+	err := taskColl.FindOne(context.TODO(), bson.M{
+		"_id": fmt.Sprintf("%s-%d", workflowName, taskID),
+	}).Decode(&t)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// UpdateTask —— ⭐ ack() 的落点
+// 任务每前进一小步，就把【整棵树】一次性写回：ReplaceOne 单文档原子替换。
+// 这是选 MongoDB 的核心理由之一：MySQL 下等价操作 = 一个事务 UPDATE 7-8 张表。
+// MatchedCount==0（文档已被删）返 ErrNotFound——静默"成功"会让致命写调用方
+// （ackStrict/passGate）以为写进去了（与 UpdateTaskIfStatus 的 CAS 守卫对齐）。
+func UpdateTask(t *models.WorkflowTask) error {
+	if t.ID == "" {
+		return errors.New("update task: empty _id")
+	}
+	res, err := taskColl.ReplaceOne(context.TODO(), bson.M{"_id": t.ID}, t)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateTaskIfStatus —— 带状态守卫的整树写回（CAS 语义）：文档当前状态 ∈ allowed 才替换。
+// "api 先读、引擎后写"的 check-then-write 竞态收口单点（cancel 数据路径 / retry 防双击
+// ——读改写窗口里文档被派发器/上一次点击翻走时，MatchedCount==0，调用方放弃本次写回，
+// API 侧翻译成 409 让调用方重读再试）。有看护人的 running 场景不走这里（信号路径）。
+func UpdateTaskIfStatus(t *models.WorkflowTask, allowed ...models.Status) (bool, error) {
+	if t.ID == "" {
+		return false, errors.New("update task: empty _id")
+	}
+	res, err := taskColl.ReplaceOne(context.TODO(),
+		bson.M{"_id": t.ID, "status": bson.M{"$in": allowed}}, t)
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount == 1, nil
+}
+
+// InCompletedTasks —— M3.5 启动宣判的扫描源。
+// 只捞 created/queued/running：这三种状态的看护人 goroutine 已随上一世进程死掉
+// （queued 也没等到派发——T1.6 拍板：重启即排空，用户重跑）。
+// ⚠️ 故意不含 pause——暂停是无需看护人的稳态（M3 灵魂），跨重启存活，有意不进扫描集。
+func InCompletedTasks() ([]*models.WorkflowTask, error) {
+	return listAll[models.WorkflowTask](taskColl, bson.M{
+		"status": bson.M{"$in": []models.Status{models.StatusCreated, models.StatusQueued, models.StatusRunning}},
+	}, bson.D{{Key: "created_at", Value: 1}})
+}
+
+// ListQueued —— T1.6 派发器的扫描源：status=queued，task_id 升序（同 wf 内先来先服务；
+// task_id 是 per-wf 计数器，跨 wf 的相对顺序不承诺全局 FIFO）。
+// 必须返回整棵树：抢占了就要直接喂给 engine.Run，投影省的那点流量换不来半棵树跑错。
+func ListQueued() ([]*models.WorkflowTask, error) {
+	return listAll[models.WorkflowTask](taskColl,
+		bson.M{"status": models.StatusQueued}, bson.D{{Key: "task_id", Value: 1}})
+}
+
+// RunningStats —— 派发器的并发视图：全局 running 总数 + 按 workflow 分组（同 wf 串行的依据）。
+// pause 不在场（它没有 goroutine，不占名额——T1.6 交互清单第一条）。
+func RunningStats() (total int64, byWf map[string]int64, err error) {
+	byWf = map[string]int64{}
+	cur, err := taskColl.Find(context.TODO(), bson.M{"status": models.StatusRunning},
+		options.Find().SetProjection(bson.M{"workflow_name": 1}))
+	if err != nil {
+		return 0, nil, err
+	}
+	defer cur.Close(context.TODO())
+	for cur.Next(context.TODO()) {
+		var row struct {
+			WorkflowName string `bson:"workflow_name"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return 0, nil, err
+		}
+		total++
+		byWf[row.WorkflowName]++
+	}
+	return total, byWf, cur.Err()
+}
+
+// ClaimQueued —— T1.6 CAS 抢占：仍是 queued 才翻 running。派发器凭 MatchedCount==1
+// 才起 goroutine——同一拍内/相邻拍间的双派、以及与 cancel 数据收口的竞态，都被
+// 这一次条件更新挡在 Mongo 的单文档原子性上。
+func ClaimQueued(t *models.WorkflowTask) (bool, error) {
+	res, err := taskColl.UpdateOne(context.TODO(),
+		bson.M{"_id": t.ID, "status": models.StatusQueued},
+		bson.M{"$set": bson.M{"status": models.StatusRunning}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount == 1, nil
+}
+
+// TaskFilter —— T4.1 任务列表过滤/分页
+type TaskFilter struct {
+	Status  string // 精确匹配（空 = 不过滤）
+	Creator string // 精确匹配（空 = 不过滤）
+	From    int64  // created_at ≥ From（unix 秒；0 = 不限）
+	To      int64  // created_at ≤ To（unix 秒；0 = 不限）
+	Page    int64  // 从 1 起；0 = 1
+	Size    int64  // 默认 20；上限 100（防止一把梭全表）
+}
+
+func (f *TaskFilter) Normalize() {
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.Size < 1 {
+		f.Size = 20
+	}
+	if f.Size > 100 {
+		f.Size = 100
+	}
+}
+
+// ListTasksFiltered —— 过滤 + 分页 + 总数（分页界面的三件套）。
+// workflowName 空 = 跨库总账本视图（不按图纸过滤，0.7.9 任务页"全部工作流"的落点）；
+// 排序随视图切换：单库 task_id 降序（新的在前），跨库 created_at 降序（全局时间线
+// ——task_id 是 per-wf 计数器，跨库拿它排序会把 A 库的 1 号排在 B 库的 100 号前面）。
+// 返回归一化后的 filter（Page/Size 已填默认值）——调用方直接用它组响应，不用再猜边界。
+func ListTasksFiltered(workflowName string, f TaskFilter) ([]*models.WorkflowTask, int64, TaskFilter, error) {
+	f.Normalize()
+	q := bson.M{}
+	if workflowName != "" {
+		q["workflow_name"] = workflowName
+	}
+	if f.Status != "" {
+		q["status"] = models.Status(f.Status)
+	}
+	if f.Creator != "" {
+		q["creator"] = f.Creator
+	}
+	if f.From > 0 || f.To > 0 {
+		rng := bson.M{}
+		if f.From > 0 {
+			rng["$gte"] = time.Unix(f.From, 0)
+		}
+		if f.To > 0 {
+			rng["$lte"] = time.Unix(f.To, 0)
+		}
+		q["created_at"] = rng
+	}
+
+	sortKey := "task_id"
+	if workflowName == "" {
+		sortKey = "created_at"
+	}
+	total, err := taskColl.CountDocuments(context.TODO(), q)
+	if err != nil {
+		return nil, 0, f, err
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: sortKey, Value: -1}}).
+		SetSkip((f.Page - 1) * f.Size).
+		SetLimit(f.Size).
+		SetProjection(bson.M{"stages": 0, "workflow_args": 0}) // 列表页不拉整棵树
+	cur, err := taskColl.Find(context.TODO(), q, opts)
+	if err != nil {
+		return nil, 0, f, err
+	}
+	defer cur.Close(context.TODO())
+
+	var out []*models.WorkflowTask
+	for cur.Next(context.TODO()) {
+		var t models.WorkflowTask
+		if err := cur.Decode(&t); err != nil {
+			return nil, 0, f, err
+		}
+		out = append(out, &t)
+	}
+	return out, total, f, cur.Err()
+}
+
+// FindTaskByID —— 按 _id 自然键（"<wf>-<taskID>"）直达。与 FindTask 的分工：批量删除
+// 的前端只握自然键字符串（wf 名含 "-" 无法反解出 (wf, taskID) 二元组），故独立成单键查法。
+func FindTaskByID(id string) (*models.WorkflowTask, error) {
+	var t models.WorkflowTask
+	err := taskColl.FindOne(context.TODO(), bson.M{"_id": id}).Decode(&t)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// DeleteTask —— 任务档案真删除（区别于 cancel 的纯数据收口）：带终态守卫的条件删除。
+// 守卫拦的是读到删窗口的 retry 竞态（终态档案被翻回 queued 的瞬间条件删除不命中，
+// 绝不误删活任务——看护 goroutine 的 ack ReplaceOne 对不存在的文档写不回，删了就是真没了）。
+func DeleteTask(id string) (bool, error) {
+	res, err := taskColl.DeleteOne(context.TODO(),
+		bson.M{"_id": id, "status": bson.M{"$in": models.FinishedStatuses}})
+	if err != nil {
+		return false, err
+	}
+	return res.DeletedCount == 1, nil
+}
+
+// DeleteTasksByWorkflow —— workflow 级联清理的档案侧（删图纸连带删它的全部任务档案）
+func DeleteTasksByWorkflow(workflowName string) (int64, error) {
+	res, err := taskColl.DeleteMany(context.TODO(), bson.M{"workflow_name": workflowName})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}

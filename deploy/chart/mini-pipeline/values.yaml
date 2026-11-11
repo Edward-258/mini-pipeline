@@ -1,0 +1,105 @@
+# chart 组织约定：
+#   tags.*                —— 内置组件开关
+#   connections.*         —— 连接串参数化
+#   mongo.persistence.existingClaim —— 继承既有 PVC
+#
+# ── 全新集群部署清单（fresh-cluster，2026-11-10 盘点，决断 #16 零痕迹化）──────────
+# 本 chart 对全新 k3s 集群 helm install 即自举：mongo 密码现场生成（mongo-auth Secret，
+# templates/secret.yaml）、buildkit TLS 渲染时现场生成、buildkitd registry 白名单由引擎
+# 启动时从 registry 集合 reconcile（决断 #16）、连接串自动拼。helm 之外还差三件环境事务：
+#   1. 镜像源绑定（必填，仓库零痕迹的唯一形态）：image.repo / runner.image / web.image ——
+#      引擎/runner/web 三镜像总得从某个仓库拉，部署期 --set 绑定；
+#      构建侧推镜像 deploy/build-*.sh 读 MP_REGISTRY 环境变量
+#   2. ingress-nginx 控制器（chart 只渲染 Ingress 资源，不装控制器）+ --set ingress.host
+#   3. 节点层 /etc/rancher/k3s/registries.yaml（可选：kubelet 拉 docker.io 加速；要拉
+#      自部署 registry 的产物自行加 endpoint——拉取侧 = 集群管理员职责，引擎只管构建推送）
+# registry:2 不再内置（决断 #16）：docker_build 推送目标 = registry 管理（API/前端）登记的
+# 记录——地址带 http:// 前缀 = 明文档（引擎 reconcile 进 buildkitd 白名单），缺省/https:// =
+# buildkitd 默认走 HTTPS 公信证书直通（零配置）。要自部署产物仓库就现场起一个（registry:2
+# 任选清单即可，本仓不携带清单），或直接登记外部 HTTPS registry。
+# ⚠️ 存量集群例外：mongo-data 是 M0 手建 PVC、非 helm 所有，upgrade 必须 --set 带回存量名
+#   （漏带 = 撞 "resource exists" fail-safe 拒绝，不静默换卷）。
+
+tags:
+  engine: true    # 引擎本体
+  mongo: true     # 内置 MongoDB；false 时必须给 connections.mongo.uri
+  web: true       # React 前端 + nginx 反代 Pod（统一入口承接者，2026-11-06）；false 时 ingress 直连引擎
+  buildkit: true  # 共享 buildkitd 构建池（决断 #15 的 buildkit 演进，替换 dind）：docker_build 的执行引擎（runner 经 buildx remote driver 打 mTLS TCP 1234）
+  # registry:2 七件套已退役（决断 #16）：不再内置产物仓库——docker_build 推送目标走
+  # registry 管理登记（自起一个 registry 或登记外部均可，本仓不携带清单）
+
+connections:
+  mongo:
+    uri: ""       # 留空 = 自动指向内置 mongo 的集群内 DNS（root 密码从 mongo-auth Secret 注入）
+
+image:
+  repo: ""        # 必填（required 守卫）：引擎镜像完整仓库路径（registry/namespace/【镜像名】含名不含 tag——模板直接 repo:tag 拼接），部署期 --set image.repo=<registry>/<ns>/mini-pipeline
+  tag: "0.7.13"   # 跟随当前引擎版本（部署仍以 --set 显式覆盖为准——helm v3 不复用上次 --set）
+  pullPolicy: Always                  # 开发期同 tag 反复推镜像，必须每次重拉
+
+# 步骤执行器宿体镜像（docker/runner.Dockerfile）：git/docker_build/archive 步骤的默认 Job 容器。
+# 0.2.0 起大满贯：alpine + git/docker-cli/curl + golang 工具链 + make/jq——自动档通吃构建类
+# job，免"现场选镜像"（单 runner 全能通吃）。
+# 0.2.1：+openssh-client（spec.hosts 远程主机的 ssh 客户端）。
+# 0.3.0：+buildx 插件（v0.38.2）——构建池 buildkit 化的客户端半边。
+# 必填（引擎在 Job 创建时守卫报错）：部署期 --set runner.image=<registry>/<namespace>/pipeline-runner:<tag>
+runner:
+  image: ""
+
+# 共享 buildkitd 构建池（决断 #15 的 buildkit 演进，2026-11-09 替换 dind）：docker_build 的
+# 构建/推送在这里执行，runner Pod 经 buildx remote driver（mTLS TCP 1234）打过来。replicas =
+# 构建舰队宽度（引擎侧 fnv task 亲和的模数，headless svc 只提供 per-pod 稳定 DNS 不做转发）。
+# buildkitd.toml 由引擎全量生成（决断 #16，scheme 显式分派）：mirror 段（MP_BK_MIRROR 注入）
+# + registry 白名单段（registry 集合里 http:// 前缀的记录；HTTPS 公信记录不进白名单零配置）；
+# 本 ConfigMap 只渲染 mirror 兜底段，防引擎首拍同步前的拉基镜像窗口。
+# ACR provenance 防线在 buildx 侧 --provenance=false（§9.9）；mtu 概念随 dockerd 退役。
+# 证书由 templates/buildkit.yaml 渲染时现场生成、只落集群 Secret（certDays = 有效期）。
+buildkit:
+  replicas: 2
+  image: moby/buildkit:v0.34.2   # 与 runner 内 buildx v0.38.2 无须严格配对（grpc 协议向下兼容）
+  mirror: https://docker.m.daocloud.io
+  certDays: 3650
+
+# Job Pod 拉私有镜像的凭证名单（可选）：部署者镜像源私有时，自建 dockerconfigjson Secret
+# 后把名字列在这里——引擎 Deployment 与运行时创建的 Job Pod 都会挂。默认空 = 全公开镜像匿名拉
+imagePullSecrets: []
+
+# 任务级共享工作区（决断 #17）：一个任务一个 PVC（mp-ws-<wf>-<taskID>）当 /workspace，
+# 同任务 job 共享仓库检出 / go 依赖缓存（GOCACHE/GOMODCACHE 钉到卷上），任务终态即删。
+# shared=false 回落每 Job emptyDir 旧世界（回滚保险）。size 是容量声明——local-path
+# 薄配置额不预占，峰值 ≈ 并发任务数 × size，节点盘紧张就调小
+workspace:
+  shared: true
+  size: 2Gi
+
+service:
+  port: 8080
+
+# 前端镜像（React+nginx 多阶段构建，docker/web.Dockerfile）：必填（required 守卫），
+# 部署期 --set web.image=<registry>/<namespace>/mini-pipeline-web:<tag>
+web:
+  image: ""
+
+ingress:
+  enabled: true
+  host: ""      # enabled 时必填（required 守卫）：统一入口域名，部署期 --set ingress.host=<域名>
+
+serviceAccount:
+  name: pipeline-engine  # 引擎创建/轮询/清理 K8s Job 所用的身份
+
+mongo:
+  persistence:
+    existingClaim: ""  # 置空 = chart 自建 PVC（全新集群默认即自举）；存量集群 upgrade 必须 --set mongo.persistence.existingClaim=mongo-data 带回 M0 手建卷
+    size: 5Gi
+  # root 密码已自举化（决断 #16）：install 时现场生成落 mongo-auth Secret（templates/secret.yaml），
+  # lookup 守卫复用——仓库零静态密钥。存量集群升级前先手建 Secret 注入现密码（一次性迁移）
+
+resources:
+  engine: {}
+  web: {}
+  buildkit:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "2", memory: 2Gi }
+  mongo:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }

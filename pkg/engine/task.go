@@ -1,0 +1,157 @@
+package engine
+
+import (
+	"fmt"
+	"time"
+
+	"pipeline/pkg/models"
+)
+
+// 图纸 → 运行实例的构造（原 api 包 buildTask/snapshotWorkflow，T3.1 下沉到 engine：
+// cron/webhook 触发器与 API 的 RunWorkflow/Clone 共用同一份"发号 → 快照 → 建树"逻辑，
+// 触发器们不许各写各的快照——图纸/实例分离的灵魂只允许一个实现）。
+
+// buildTask —— 发号后的实例构造。⭐灵魂：WorkflowArgs 内嵌【当时的完整图纸快照】，
+// 此后改图纸/删图纸都不影响查历史、克隆重跑。
+func BuildTask(wf *models.Workflow, taskID int64) *models.WorkflowTask {
+	stages := make([]*models.StageTask, 0, len(wf.Stages))
+	for _, st := range wf.Stages {
+		stt := &models.StageTask{
+			Name:     st.Name,
+			Parallel: st.Parallel,
+			Status:   models.StatusCreated,
+		}
+		if st.ManualExec != nil {
+			// 运行时副本：Executed 归零（M3 放行时在这里翻 true）；
+			// T3.4 审批配置随快照走（approvers/policy 是闸门语义的一部分，丢了 all 就变 any——活体验收抓的）
+			stt.ManualExec = &models.ManualExec{
+				Enabled:   st.ManualExec.Enabled,
+				Approvers: append([]string(nil), st.ManualExec.Approvers...),
+				Policy:    st.ManualExec.Policy,
+			}
+		}
+		for _, jb := range st.Jobs {
+			specPtr, ds := copySpecs(jb)
+			// 步骤翻译：图纸 steps → 运行时 StepTask（与 EffectiveSteps 同源：旧图纸 Scripts → 隐式 "main"）
+			var steps []*models.StepTask
+			if specPtr != nil {
+				eff := specPtr.EffectiveSteps()
+				steps = make([]*models.StepTask, len(eff))
+				for i, ss := range eff {
+					steps[i] = &models.StepTask{Name: ss.Name, Type: ss.Type, Status: models.StatusCreated}
+				}
+			}
+			stt.Jobs = append(stt.Jobs, &models.JobTask{
+				Name:       jb.Name,
+				JobType:    jb.JobType,
+				Status:     models.StatusCreated,
+				Spec:       specPtr,
+				DeploySpec: ds,
+				Steps:      steps,
+			})
+		}
+		stages = append(stages, stt)
+	}
+
+	// 统一代码源（决断 #18）：图纸的 source 声明在此合成进快照——前置 checkout stage
+	// 先克隆进任务级共享工作区（决断 #17），下游 job 直接见文件。状态机/重试/取消/
+	// pause/Recover/失败刹车全免费继承（clone 失败 = stage 失败 → 后续全 skipped）。
+	// 合成只发生在任务快照：workflow 文档与编辑器 JSON 保持纯声明，快照=可执行真相（灵魂 #1）
+	if wf.Source != nil {
+		stages = append([]*models.StageTask{buildCheckoutStage(wf.Source)}, stages...)
+	}
+
+	return &models.WorkflowTask{
+		ID:            fmt.Sprintf("%s-%d", wf.Name, taskID), // 自然键：插入前定好，ack 全靠它
+		TaskID:        taskID,
+		WorkflowName:  wf.Name,
+		Status:        models.StatusCreated,
+		Creator:       "api",
+		WorkflowArgs:  snapshotWorkflow(wf),
+		GlobalContext: copyStrings(wf.GlobalContext), // M4：图纸级变量 → 任务初始上下文（快照独立副本，改图纸不影响在跑任务）
+		Stages:        stages,
+		CreatedAt:     time.Now(),
+	}
+}
+
+// buildCheckoutStage —— 代码源合成的 checkout stage（Kind="source" 供前端渲染标记，
+// 不靠名字嗅探）。单 job 单 git 步骤：NeedsRunner 判定天然成立（StepGit 在名单），
+// 镜像走 runner（git 二进制在）；spec 走常规渲染管线（source 字段支持 {{var}}）
+func buildCheckoutStage(src *models.SourceSpec) *models.StageTask {
+	return &models.StageTask{
+		Name:   "checkout",
+		Kind:   "source",
+		Status: models.StatusCreated,
+		Jobs: []*models.JobTask{{
+			Name:    "clone",
+			JobType: models.JobTypeFreestyle,
+			Status:  models.StatusCreated,
+			Spec:    &models.FreestyleSpec{Steps: []*models.StepSpec{src.CheckoutStep()}},
+			Steps:   []*models.StepTask{{Name: "clone", Type: models.StepGit, Status: models.StatusCreated}},
+		}},
+	}
+}
+
+// copyStrings —— string map 浅值深拷贝（值是 string，拷 map 结构即可）
+func copyStrings(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// snapshotWorkflow —— 图纸深拷贝（Stage/Job/Spec 逐层复制，绝不共享指针）
+func snapshotWorkflow(wf *models.Workflow) *models.Workflow {
+	out := &models.Workflow{
+		Name:          wf.Name,
+		Stages:        make([]*models.Stage, 0, len(wf.Stages)),
+		GlobalContext: copyStrings(wf.GlobalContext), // 快照连变量初始值一起封存
+		CreatedAt:     wf.CreatedAt,
+		UpdatedAt:     wf.UpdatedAt,
+	}
+	if wf.Source != nil { // 代码源声明随快照封存（retry/clone 拿快照重建 checkout stage）
+		src := *wf.Source
+		out.Source = &src
+	}
+	for _, st := range wf.Stages {
+		s := &models.Stage{Name: st.Name, Parallel: st.Parallel}
+		if st.ManualExec != nil {
+			me := *st.ManualExec
+			me.Approvals = nil // 审批记录属于某次运行，图纸快照不带
+			me.Executed = false
+			s.ManualExec = &me
+		}
+		for _, jb := range st.Jobs {
+			specPtr, ds := copySpecs(jb)
+			s.Jobs = append(s.Jobs, &models.Job{Name: jb.Name, JobType: jb.JobType, Spec: specPtr, DeploySpec: ds})
+		}
+		out.Stages = append(out.Stages, s)
+	}
+	return out
+}
+
+// copySpecs —— job 引用字段的快照深拷贝单点（"快照绝不共享指针"纪律的实体）：
+// FreestyleSpec 浅拷贝 + steps 逐个深拷贝；DeploySpec 全标量字段浅拷贝即深拷贝。
+// BuildTask（运行树）与 snapshotWorkflow（图纸快照）共用这一个实现，快照语义不两处维护。
+func copySpecs(jb *models.Job) (spec *models.FreestyleSpec, ds *models.DeploySpec) {
+	if jb.Spec != nil { // deploy job 无 freestyle spec，跳过
+		cp := *jb.Spec
+		if len(jb.Spec.Steps) > 0 {
+			cp.Steps = make([]*models.StepSpec, len(jb.Spec.Steps))
+			for i, ss := range jb.Spec.Steps {
+				s := *ss
+				cp.Steps[i] = &s
+			}
+		}
+		spec = &cp
+	}
+	if jb.DeploySpec != nil {
+		c := *jb.DeploySpec
+		ds = &c
+	}
+	return spec, ds
+}

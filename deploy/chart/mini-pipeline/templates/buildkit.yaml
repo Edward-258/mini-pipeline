@@ -1,0 +1,221 @@
+{{- if .Values.tags.buildkit }}
+# 共享 buildkitd 构建池（决断 #15 的 buildkit 演进，2026-11-09 起替换 dind——dind 常驻
+# dockerd+containerd 双进程太重，buildkitd 单进程专职构建）：docker_build 步骤的执行引擎，
+# runner Pod 经 buildx remote driver（mTLS TCP 1234）打过来，构建/推送全在本容器里跑。
+# 一个文件五对象：TLS Secret / buildkitd.toml ConfigMap / StatefulSet / headless Svc / prune CronJob。
+#
+# TLS 证书：helm 渲染时现场生成（sprig genCA/genSignedCert），lookup 守卫 = 已存在即复用
+# （upgrade 不轮换，避免滚动窗口握手失败；轮换 = 删 Secret + 重启 buildkit，手动动作）——
+# 只落集群 Secret 不进 git（公开仓库看不到私钥）。服务端 SAN 覆盖短名与 FQDN 两种连法。
+# 三层注入不变：ca.pem/cert.pem/key.pem 三文件，Secret 卷 items 改名投影到三个消费点
+# （buildkitd 服务端 / runner Job 客户端 / prune CronJob 客户端）。
+# buildkitd.toml 走 ConfigMap（决断 #16 起**全量内容由引擎运行时生成**——registry 白名单
+# 是运行时数据：registry CRUD / 引擎启动时
+# SyncBuildkitRegistries 生成 mirror 段 + [registry."host"] http=true 白名单段写回本 CM，
+# 内容变化即 patch 本 STS 的 pod-template hash 注解触发滚动）。本模板只渲染 mirror 兜底段
+# （引擎首拍同步前的基镜像拉取窗口），helm upgrade 重置 CM 后引擎重启即写回——自愈闭环。
+
+{{- $ns := .Release.Namespace }}
+{{- $days := int .Values.buildkit.certDays }}
+{{- $caCert := "" }}{{- $caKey := "" }}{{- $srvCert := "" }}{{- $srvKey := "" }}{{- $cliCert := "" }}{{- $cliKey := "" }}
+{{- $existing := lookup "v1" "Secret" $ns "buildkit-tls-certs" }}
+{{- if $existing }}
+  {{- $caCert = index $existing.data "ca.crt" | b64dec }}
+  {{- $caKey = index $existing.data "ca.key" | b64dec }}
+  {{- $srvCert = index $existing.data "tls.crt" | b64dec }}
+  {{- $srvKey = index $existing.data "tls.key" | b64dec }}
+  {{- $cliCert = index $existing.data "client.crt" | b64dec }}
+  {{- $cliKey = index $existing.data "client.key" | b64dec }}
+{{- else }}
+  {{- $ca := genCA "mp-buildkit-ca" $days }}
+  {{- $sans := list "buildkit" "*.buildkit" (printf "buildkit.%s" $ns) (printf "*.buildkit.%s" $ns) (printf "buildkit.%s.svc.cluster.local" $ns) (printf "*.buildkit.%s.svc.cluster.local" $ns) }}
+  {{- $srv := genSignedCert "buildkit" (list) $sans $days $ca }}
+  {{- $cli := genSignedCert "mp-buildkit-client" (list) (list) $days $ca }}
+  {{- $caCert = $ca.Cert }}
+  {{- $caKey = $ca.Key }}
+  {{- $srvCert = $srv.Cert }}
+  {{- $srvKey = $srv.Key }}
+  {{- $cliCert = $cli.Cert }}
+  {{- $cliKey = $cli.Key }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: buildkit-tls-certs
+  namespace: {{ $ns }}
+  labels:
+    app: buildkit
+type: Opaque
+data:
+  ca.crt: {{ $caCert | b64enc }}
+  ca.key: {{ $caKey | b64enc }}
+  tls.crt: {{ $srvCert | b64enc }}
+  tls.key: {{ $srvKey | b64enc }}
+  client.crt: {{ $cliCert | b64enc }}
+  client.key: {{ $cliKey | b64enc }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: {{ $ns }}
+  labels:
+    app: buildkit
+data:
+  buildkitd.toml: |
+    # 兜底段（决断 #16）：全量内容由引擎 SyncBuildkitRegistries 运行时覆写——mirror 段 +
+    # registry 集合里 http:// 前缀记录的白名单段（scheme 显式分派；HTTPS 公信记录不进白名单）。
+    [registry."docker.io"]
+      mirrors = ["{{ .Values.buildkit.mirror }}"]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: buildkit
+  namespace: {{ $ns }}
+  labels:
+    app: buildkit
+spec:
+  serviceName: buildkit
+  replicas: {{ .Values.buildkit.replicas }}
+  selector:
+    matchLabels:
+      app: buildkit
+  template:
+    metadata:
+      labels:
+        app: buildkit
+    spec:
+      affinity:
+        # 副本按 hostname 打散（两 worker 各一）；engine 侧 fnv 亲和直连 per-pod DNS，
+        # 不经 Service 层均衡（headless svc 只为稳定 DNS 存在）
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: buildkit
+      containers:
+        - name: buildkit
+          image: {{ .Values.buildkit.image | quote }}
+          # 双监听：unix sock 供容器内 readiness/人工 exec 用（buildctl 不带 TLS 参数打
+          # 本地 sock）；TCP 1234 + mTLS 供 runner buildx 客户端（grpc TLS，明文口不存在）。
+          # TLS 三参只作用于 tcp listener；--config 挂 ConfigMap（内容引擎运行时生成，决断 #16）。
+          # privileged = 官方 k8s rootful 姿势（overlayfs snapshotter 要 mount 权限），
+          # 与 dind 时代同特权面无新增——特权收敛在常驻构建池容器。
+          command: ["buildkitd"]
+          args:
+            - --addr=unix:///run/buildkit/buildkitd.sock
+            - --addr=tcp://0.0.0.0:1234
+            - --tlscacert=/certs/ca.pem
+            - --tlscert=/certs/cert.pem
+            - --tlskey=/certs/key.pem
+            - --config=/etc/buildkit/buildkitd.toml
+          securityContext:
+            privileged: true   # overlayfs snapshotter 刚需；对照 moby/buildkit 官方 k8s rootful 示例
+          ports:
+            - name: tcp
+              containerPort: 1234
+          readinessProbe:
+            exec:
+              command: ["buildctl", "--addr", "unix:///run/buildkit/buildkitd.sock", "debug", "workers"]   # 本地 unix sock，不依赖 TCP/TLS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          resources:
+            {{- toYaml .Values.resources.buildkit | nindent 12 }}
+          volumeMounts:
+            - name: buildkit-state
+              mountPath: /var/lib/buildkit
+            - name: server-tls
+              mountPath: /certs
+              readOnly: true
+            - name: config
+              mountPath: /etc/buildkit
+              readOnly: true
+      volumes:
+        - name: buildkit-state
+          emptyDir: {}   # 缓存随 Pod 重建丢弃（对齐 dind 时代语义）；首建重拉基镜像，mirror 加持代价一次
+        - name: server-tls
+          secret:
+            secretName: buildkit-tls-certs
+            items:
+              - {key: ca.crt, path: ca.pem}
+              - {key: tls.crt, path: cert.pem}
+              - {key: tls.key, path: key.pem}
+        - name: config
+          configMap:
+            name: buildkitd-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkit
+  namespace: {{ $ns }}
+  labels:
+    app: buildkit
+spec:
+  clusterIP: None   # headless：只为 StatefulSet 的 per-pod 稳定 DNS（buildkit-<i>.buildkit）存在，无 VIP 不做转发
+  selector:
+    app: buildkit
+  ports:
+    - name: tcp
+      port: 1234
+      targetPort: tcp
+---
+# 温和 prune：清悬空构建记录防 emptyDir 撑爆节点盘，保层缓存；逐副本打（引擎亲和直连
+# per-pod DNS，svc 名打不到指定副本）。用 buildkit 镜像自带的 buildctl，免新镜像。
+# buildctl 的 TLS 参数与 dockerd 同名（--tlscacert/--tlscert/--tlskey），客户端三层注入照旧。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: buildkit-prune
+  namespace: {{ $ns }}
+  labels:
+    app: buildkit
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: prune
+              image: {{ .Values.buildkit.image | quote }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  i=0
+                  while [ "$i" -lt "$BUILDKIT_REPLICAS" ]; do
+                    echo "== buildkit-$i prune =="
+                    buildctl --addr "tcp://buildkit-$i.buildkit:1234" \
+                      --tlscacert /client/ca.pem --tlscert /client/cert.pem --tlskey /client/key.pem \
+                      prune || true
+                    i=$((i+1))
+                  done
+              env:
+                - name: BUILDKIT_REPLICAS
+                  value: {{ .Values.buildkit.replicas | quote }}
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+              volumeMounts:
+                - name: client-tls
+                  mountPath: /client
+                  readOnly: true
+          volumes:
+            - name: client-tls
+              secret:
+                secretName: buildkit-tls-certs
+                items:
+                  - {key: ca.crt, path: ca.pem}
+                  - {key: client.crt, path: cert.pem}
+                  - {key: client.key, path: key.pem}
+{{- end }}

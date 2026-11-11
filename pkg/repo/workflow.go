@@ -1,0 +1,63 @@
+package repo
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+
+	"pipeline/pkg/models"
+)
+
+var (
+	ErrNotFound = errors.New("document not found")
+	ErrExists   = errors.New("document already exists") // T2.1：重名资源冲突（env 等）
+)
+
+func CreateWorkflow(w *models.Workflow) error {
+	w.CreatedAt = time.Now()
+	w.UpdatedAt = w.CreatedAt
+	_, err := workflowColl.InsertOne(context.TODO(), w)
+	return err
+}
+
+func FindWorkflow(name string) (*models.Workflow, error) {
+	var w models.Workflow
+	err := workflowColl.FindOne(context.TODO(), bson.M{"_id": name}).Decode(&w)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+func ListWorkflows() ([]*models.Workflow, error) {
+	// created_at 降序：列表页"最新的在上"（与任务列表 task_id 降序同一 UX 语义）
+	return listAll[models.Workflow](workflowColl, bson.M{}, bson.D{{Key: "created_at", Value: -1}})
+}
+
+// UpdateWorkflow —— 全量替换（与 ack 的 ReplaceOne 同构）；不存在交由调用方翻译 404。
+// CreatedAt 由调用方从旧档带过来：图纸的出身不许被更新改写。
+func UpdateWorkflow(w *models.Workflow) error {
+	w.UpdatedAt = time.Now()
+	res, err := workflowColl.ReplaceOne(context.TODO(), bson.M{"_id": w.Name}, w)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteWorkflow —— 图纸硬删（不做软删字段，档案删除即终局）
+// 图纸硬删 + 级联清理（任务档案 + 定时器，0.7.9 起）——级联编排不在这层
+// （本函数只删图纸文档），统一走 engine.DeleteWorkflowFull（单删与批量同一条路径）
+func DeleteWorkflow(name string) error {
+	_, err := workflowColl.DeleteOne(context.TODO(), bson.M{"_id": name})
+	return err
+}
