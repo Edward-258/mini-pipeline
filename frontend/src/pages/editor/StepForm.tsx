@@ -12,9 +12,10 @@ import type { Registry, StepSpec, StepType } from '../../types'
 
 const { Text } = Typography
 
+// 类型切换四选一：git 不在列（clone 唯一化到代码源，见 JobDrawer STEP_ADD_OPTIONS 注）；
+// git 字段的渲染分支保留——存量档案与 JSON 逃生舱的 git 步骤照常显形
 const STEP_TYPES: { value: StepType; label: string }[] = [
   { value: 'shell', label: 'shell 脚本' },
-  { value: 'git', label: 'git 拉代码' },
   { value: 'docker_build', label: '镜像构建' },
   { value: 'junit_report', label: '测试报告' },
   { value: 'archive', label: '产物归档' },

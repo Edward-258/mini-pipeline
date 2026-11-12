@@ -10,9 +10,11 @@ import type { Env, ErrorPolicy, Host, Job, JobType, Registry, StepType, Workflow
 
 const { Text } = Typography
 
+// 步骤类型四选一：git 不在列——克隆已收口到最左代码源（决断 #18，clone 唯一化），
+// git 只是引擎内部合成 checkout / 存量档案重放的执行实现，不再是用户可手的步骤；
+// JSON 模式逃生舱仍接受 git（多仓边角），旧档案的 git 步骤照常渲染编辑。
 const STEP_ADD_OPTIONS: { value: StepType; label: string }[] = [
   { value: 'shell', label: '+ shell' },
-  { value: 'git', label: '+ git' },
   { value: 'docker_build', label: '+ 镜像构建' },
   { value: 'junit_report', label: '+ 测试报告' },
   { value: 'archive', label: '+ 归档' },
