@@ -41,7 +41,7 @@
 ## 快速开始
 
 ```bash
-helm install mini-pipeline deploy/chart/mini-pipeline -n pipeline --create-namespace \
+helm install mini-pipeline oci://ghcr.io/edward-258/mini-pipeline --version 0.7.15 -n pipeline --create-namespace \
   --set image.repo=<registry>/<ns> \
   --set runner.image=<registry>/<ns>/pipeline-runner:<tag> \
   --set web.image=<registry>/<ns>/mini-pipeline-web:<tag> \
