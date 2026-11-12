@@ -11,16 +11,13 @@ import (
 
 // TestRegistriesCRUD —— 仓库管理全链路回环（真 mongo + httptest，putTestServer 同纪律）：
 // CRUD 全路径 + is_default 全量制语义（建立翻转旧默认 / 更新改靶 / 删除默认不选举）
-// + BuildkitSyncHook 触发断言（决断 #16：CRUD 成功即同步白名单，失败路径不触发）。
+// + 同步钩子触发断言（决断 #16：CRUD 成功即同步白名单，失败路径不触发）。
 func TestRegistriesCRUD(t *testing.T) {
-	// 钩子计数（决断 #16）：create A / create B / delete B = 恰 3 次成功触发；
-	// 400/409/404 失败路径零触发。Cleanup 恢复原值（快照恢复 defer 里的 PUT 也会触发，无害）。
+	// 同步计数（决断 #16）：create A / create B / delete B = 恰 3 次成功触发；
+	// 400/409/404 失败路径零触发。stub 经 Deps 随路由构造注入，不碰任何全局
+	// （快照恢复 defer 里的 PUT 也会触发，无害——发生在断言之后）。
 	syncCalls := 0
-	oldHook := BuildkitSyncHook
-	BuildkitSyncHook = func() { syncCalls++ }
-	t.Cleanup(func() { BuildkitSyncHook = oldHook })
-
-	base := putTestServer(t)
+	base := putTestServer(t, Deps{BuildkitSync: func() { syncCalls++ }})
 	pfx := fmt.Sprintf("reg-%d", time.Now().UnixNano()%100000)
 	nameA, nameB := pfx+"-a", pfx+"-b"
 	defer httpJSON(t, "DELETE", base+"/api/registries/"+nameA, nil)
@@ -108,7 +105,7 @@ func TestRegistriesCRUD(t *testing.T) {
 	}
 	// 钩子触发总账：成功路径 create A / create B / delete B 恰 3 次，失败路径（400/409/404）零次
 	if syncCalls != 3 {
-		t.Fatalf("BuildkitSyncHook must fire exactly 3 times (createA+createB+deleteB), got %d", syncCalls)
+		t.Fatalf("BuildkitSync must fire exactly 3 times (createA+createB+deleteB), got %d", syncCalls)
 	}
 }
 

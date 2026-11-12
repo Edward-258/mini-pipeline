@@ -13,7 +13,6 @@ import (
 
 	"pipeline/pkg/engine/cancel"
 	"pipeline/pkg/models"
-	"pipeline/pkg/repo"
 )
 
 // DeployJobCtl —— deploy 作业（T2.2，CD 本体）。
@@ -29,15 +28,6 @@ import (
 // 取消语义：轮询期感知 cancel 即返回，但 patch 已发生不回滚（取消 ≠ 撤销部署）。
 // JobTask.K8sJobName 对 deploy 恒空——日志端点自然回落到空档案。
 
-// envResolver —— env 名 → namespace 的解析钩子（var 而非直呼 repo：单测可以 stub）
-var envResolver = func(name string) (string, error) {
-	e, err := repo.FindEnv(name)
-	if err != nil {
-		return "", fmt.Errorf("resolve env %q: %w", name, err)
-	}
-	return e.Namespace, nil
-}
-
 // rolloutWaitTimeout —— rollout 轮询上限（var：单测缩短，别让表测跑 10 分钟）
 var rolloutWaitTimeout = jobTimeout
 
@@ -46,10 +36,13 @@ type DeployJobCtl struct{}
 
 func (DeployJobCtl) Run(c *Ctx, jt *models.JobTask) error {
 	ds := jt.DeploySpec
-	ns, err := envResolver(ds.Env)
+	// env 名 → namespace（解析依赖经 Ctx.FindEnv 注入，engine 装配持久层真身：
+	// patch 前现解析，靶标永远拿 env 集合里的当前值）
+	e, err := c.FindEnv(ds.Env)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve env %q: %w", ds.Env, err)
 	}
+	ns := e.Namespace
 
 	// Strategic Merge Patch：containers 按 name 合并——只动目标容器的 image，
 	// 其余容器/字段原样保留（对照 kubectl set image 的底层语义）

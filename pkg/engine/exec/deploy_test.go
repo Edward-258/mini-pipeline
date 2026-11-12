@@ -51,11 +51,10 @@ func deployFixture(t *testing.T, mutate func(*appsv1.Deployment)) (*Ctx, *models
 	ds := &models.DeploySpec{Env: "dev", DeploymentName: "nginx", ContainerName: "web", Image: "nginx:2.0"}
 	jt := &models.JobTask{Name: "ship", JobType: models.JobTypeDeploy, DeploySpec: ds}
 	tk := &models.WorkflowTask{ID: "wf-1", WorkflowName: "wf", TaskID: 1}
-	tc := &Ctx{Client: fc, NS: "pipeline", Task: tk, Mu: &sync.Mutex{}}
-
-	old := envResolver
-	envResolver = func(string) (string, error) { return "mvp-dev", nil }
-	t.Cleanup(func() { envResolver = old })
+	tc := &Ctx{
+		Client: fc, NS: "pipeline", Task: tk, Mu: &sync.Mutex{},
+		FindEnv: func(string) (*models.Env, error) { return &models.Env{Name: "dev", Namespace: "mvp-dev"}, nil },
+	}
 
 	return tc, jt, fc
 }
@@ -124,9 +123,7 @@ func TestDeployWaitRolloutTimeout(t *testing.T) {
 // env 解析失败：找不到 env 的 deploy job 在 patch 前就报错（不浪费一次 API 调用）
 func TestDeployBadEnv(t *testing.T) {
 	tc, jt, _ := deployFixture(t, nil)
-	old := envResolver // 盖在 fixture 的 resolver 之上（fixture 的 cleanup 会恢复到它的 stub，无所谓）
-	envResolver = func(string) (string, error) { return "", fmt.Errorf("no such env") }
-	t.Cleanup(func() { envResolver = old })
+	tc.FindEnv = func(string) (*models.Env, error) { return nil, fmt.Errorf("no such env") } // 盖掉 fixture 的 stub
 
 	if err := (DeployJobCtl{}).Run(tc, jt); err == nil {
 		t.Fatal("bad env should fail before patch")

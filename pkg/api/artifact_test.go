@@ -25,7 +25,7 @@ func artifactTestEnv(t *testing.T) *httptest.Server {
 		t.Skipf("mongo unavailable, skip: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	return httptest.NewServer(NewRouter())
+	return httptest.NewServer(NewRouter(Deps{}))
 }
 
 func artifactTask(t *testing.T, wf string) *models.WorkflowTask {

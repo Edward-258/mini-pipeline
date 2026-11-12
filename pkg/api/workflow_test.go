@@ -19,13 +19,13 @@ import (
 // PUT workflow/env 全链路回环：真 mongo（port-forward）+ httptest 路由，
 // mongo 不可达自动 skip（与 artifact_test 同一纪律）。
 
-func putTestServer(t *testing.T) string {
+func putTestServer(t *testing.T, deps Deps) string {
 	t.Helper()
 	if err := repo.Init(config.Load().MongoURI); err != nil {
 		t.Skipf("mongo unavailable, skip: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	return httptest.NewServer(NewRouter()).URL
+	return httptest.NewServer(NewRouter(deps)).URL
 }
 
 func httpJSON(t *testing.T, method, url string, body any) (int, []byte) {
@@ -72,7 +72,7 @@ func putFixtureWorkflow(name string) *models.Workflow {
 
 // TestUpdateWorkflow —— 建档→PUT 改图纸→GET 验证（内容更新 + created_at 出身保留）+ 404/400 全路径
 func TestUpdateWorkflow(t *testing.T) {
-	base := putTestServer(t)
+	base := putTestServer(t, Deps{})
 	name := fmt.Sprintf("putwf-%d", time.Now().UnixNano()%100000)
 	defer httpJSON(t, "DELETE", base+"/api/workflows/"+name, nil)
 
@@ -130,7 +130,7 @@ func TestUpdateWorkflow(t *testing.T) {
 
 // TestUpdateEnv —— 建档→PUT 改 namespace/desc→GET 验证（created_at 保留）+ 404/400
 func TestUpdateEnv(t *testing.T) {
-	base := putTestServer(t)
+	base := putTestServer(t, Deps{})
 	name := fmt.Sprintf("putenv-%d", time.Now().UnixNano()%100000)
 	defer httpJSON(t, "DELETE", base+"/api/envs/"+name, nil)
 

@@ -17,14 +17,9 @@ import (
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`) // 与 K8s namespace 命名规则同构（小写数字中划线）
 
-// EnsureNamespaceHook —— env 落库前的 namespace 随建钩子。
-// main.go 装配 k8s.EnsureNamespace 真身；var 而非直呼 K8s：api 层不 import 任何 K8s
-// 东西（router.go 教义，同 exec 包 envResolver 的钩子模式）。
-// nil = 未装配（单测路由）= 纯登记模式，行为与旧版一致。
-var EnsureNamespaceHook func(ns string) error
-
-// createEnv POST /api/envs
-func createEnv(c *gin.Context) {
+// createEnv POST /api/envs（deps.EnsureNamespace = 落库前的 namespace 随建钩子，
+// nil = 纯登记模式；注入点见 router.go Deps）
+func createEnv(c *gin.Context, deps Deps) {
 	var e models.Env
 	if err := c.ShouldBindJSON(&e); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -44,8 +39,8 @@ func createEnv(c *gin.Context) {
 	}
 	// 随建先行（失败不落库）→ 不变量：落库的 env 其 namespace 必然已存在；
 	// 重复 POST 幂等重建同 ns 无害，409 路径照旧在 repo 层
-	if EnsureNamespaceHook != nil {
-		if err := EnsureNamespaceHook(e.Namespace); err != nil {
+	if deps.EnsureNamespace != nil {
+		if err := deps.EnsureNamespace(e.Namespace); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ensure namespace: " + err.Error()})
 			return
 		}
@@ -75,7 +70,7 @@ func listEnvs(c *gin.Context) {
 
 // updateEnv PUT /api/envs/:name —— name 是主键不可改（改=新建+删旧），
 // 只更新 namespace/desc；CreatedAt 从旧档带过来
-func updateEnv(c *gin.Context) {
+func updateEnv(c *gin.Context, deps Deps) {
 	var e models.Env
 	if err := c.ShouldBindJSON(&e); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -107,8 +102,8 @@ func updateEnv(c *gin.Context) {
 		return
 	}
 	// PUT 改 ns 目标同样保证已存在（不变量与 createEnv 一致）；幂等放过未变更的 ns
-	if EnsureNamespaceHook != nil {
-		if err := EnsureNamespaceHook(e.Namespace); err != nil {
+	if deps.EnsureNamespace != nil {
+		if err := deps.EnsureNamespace(e.Namespace); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ensure namespace: " + err.Error()})
 			return
 		}

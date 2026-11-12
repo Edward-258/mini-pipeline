@@ -9,6 +9,7 @@ import (
 	"pipeline/pkg/engine/exec"
 	"pipeline/pkg/k8s"
 	"pipeline/pkg/models"
+	"pipeline/pkg/repo"
 )
 
 // job 级状态机：变量渲染 → 执行器
@@ -61,8 +62,15 @@ func runJobTask(tc *taskCtx, t *models.WorkflowTask, st *models.StageTask, jt *m
 	log.Printf("engine: task %s/%d job %q -> %s", t.WorkflowName, t.TaskID, jt.Name, jt.K8sJobName)
 
 	// 执行器视图：Mu/Ack 注入 taskCtx 的同一把锁与同一个整树写回——并行 job 的
-	// 互斥协议由 engine 单点定义，exec 消费不另立（Ack 是无锁版：调用方必须已持 Mu）
-	ec := &exec.Ctx{Client: tc.client, NS: tc.ns, Task: t, Mu: &tc.mu, Ack: ack, CancelCh: tc.cancelCh}
+	// 互斥协议由 engine 单点定义，exec 消费不另立（Ack 是无锁版：调用方必须已持 Mu）。
+	// 解析依赖（env/host/registry 真身）同点装配：exec 不 import repo，单测才能传 stub
+	ec := &exec.Ctx{
+		Client: tc.client, NS: tc.ns, Task: t, Mu: &tc.mu, Ack: ack, CancelCh: tc.cancelCh,
+		FindEnv:             repo.FindEnv,
+		FindHost:            repo.FindHost,
+		FindRegistry:        repo.FindRegistry,
+		FindDefaultRegistry: repo.FindDefaultRegistry,
+	}
 	ctl := exec.NewJobCtl(jt)
 	runErr := ctl.Run(ec, jt) // K8s 级：创建/轮询/退出码/超时（期间 live 刷步骤状态）
 	infoErr := error(nil)

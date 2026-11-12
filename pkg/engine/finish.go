@@ -40,7 +40,7 @@ func markRestSkipped(t *models.WorkflowTask, failedStage *models.StageTask) {
 }
 
 // CleanupWorkspace —— 任务级共享工作区 PVC 的清理钩子（决断 #17）：main.go 装配真身
-// （EnsureNamespaceHook/BuildkitSyncHook 同款 var 钩子形态），nil = 共享工作区未启用
+// （var 钩子形态，装配点同 api 层 Deps 都收拢在 main），nil = 共享工作区未启用
 // （单测/降级纯数据）。finish 是自然终态唯一汇点，删卷挂这里；钩子自己 best-effort
 // （失败响亮日志）——漏删由 Recover 启动清扫兜底（label 扫出 → 任务已终态/已删才删）
 var CleanupWorkspace func(workflowName string, taskID int64)

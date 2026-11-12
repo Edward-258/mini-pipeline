@@ -15,22 +15,20 @@ import (
 // RSA 加密回传、云厂商动态凭证、连通性 validate 端点、项目授权、镜像 tag 浏览。
 // ⚠️ 明文姿态：凭证随列表回传（知情接受；凭证活库不进仓，决断 #16）。
 //
-// BuildkitSyncHook —— CRUD 成功后同步 buildkitd 白名单（决断 #16：registry 地址是运行时
-// 数据，CRUD 即触发同步）。main.go 装配真身（k8s.SyncBuildkitRegistries），
-// nil = 降级（单测路由/无 buildkit 池环境）。best-effort：失败只记日志不回滚 CRUD——
-// 引擎启动 reconcile + 下次 CRUD 自愈。
-var BuildkitSyncHook func()
+// CRUD 成功后的白名单同步经 deps.BuildkitSync 注入（router.go Deps；决断 #16：
+// registry 地址是运行时数据，CRUD 即触发同步），nil = 降级（单测路由/无构建池环境）。
+// best-effort：失败只记日志不回滚 CRUD——引擎启动 reconcile + 下次 CRUD 自愈。
 
-// syncBuildkit —— 钩子调用包装（nil 即跳过；错误处理在真身 main.go 里记响亮日志）
-func syncBuildkit() {
-	if BuildkitSyncHook == nil {
+// syncBuildkit —— 同步触发包装（nil 即跳过；错误处理在真身 main.go 里记响亮日志）
+func syncBuildkit(deps Deps) {
+	if deps.BuildkitSync == nil {
 		return
 	}
-	BuildkitSyncHook()
+	deps.BuildkitSync()
 }
 
 // createRegistry POST /api/registries
-func createRegistry(c *gin.Context) {
+func createRegistry(c *gin.Context, deps Deps) {
 	var r models.Registry
 	if err := c.ShouldBindJSON(&r); err != nil {
 		respond(c, http.StatusBadRequest, err.Error())
@@ -47,7 +45,7 @@ func createRegistry(c *gin.Context) {
 		respond(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	syncBuildkit()
+	syncBuildkit(deps)
 	c.JSON(http.StatusOK, r)
 }
 
@@ -65,7 +63,7 @@ func listRegistries(c *gin.Context) {
 }
 
 // updateRegistry PUT /api/registries/:name —— name 是主键不可改；CreatedAt 从旧档带回
-func updateRegistry(c *gin.Context) {
+func updateRegistry(c *gin.Context, deps Deps) {
 	var r models.Registry
 	if err := c.ShouldBindJSON(&r); err != nil {
 		respond(c, http.StatusBadRequest, err.Error())
@@ -93,12 +91,12 @@ func updateRegistry(c *gin.Context) {
 		respond(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	syncBuildkit()
+	syncBuildkit(deps)
 	c.JSON(http.StatusOK, r)
 }
 
 // deleteRegistry DELETE /api/registries/:name —— 删默认回落"无默认"稳态不选举（repo 层语义）
-func deleteRegistry(c *gin.Context) {
+func deleteRegistry(c *gin.Context, deps Deps) {
 	if err := repo.DeleteRegistry(c.Param("name")); errors.Is(err, repo.ErrNotFound) {
 		respond(c, http.StatusNotFound, "registry not found")
 		return
@@ -106,6 +104,6 @@ func deleteRegistry(c *gin.Context) {
 		respond(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	syncBuildkit()
+	syncBuildkit(deps)
 	c.JSON(http.StatusOK, gin.H{"deleted": c.Param("name")})
 }

@@ -8,21 +8,21 @@ import (
 	"pipeline/pkg/models"
 )
 
-// TestResolveRegistrySteps —— 推送目标三档解析表测（hook stub，不摸 repo）：
+// TestResolveRegistrySteps —— 推送目标三档解析表测（Ctx stub，不摸持久层）：
 //
 //	显式引用 > 裸名跟随默认 > 全名直通；裸名无默认 = 报错（决断 #16）。
 func TestResolveRegistrySteps(t *testing.T) {
-	oldRef, oldDef := registryResolver, defaultRegistryFinder
-	registryResolver = func(name string) (*models.Registry, error) {
-		if name == "ghost" {
-			return nil, repoErrNotFound
-		}
-		return &models.Registry{Name: name, Address: "reg.example.com/ns", Username: "u", Password: "p'w"}, nil
+	c := &Ctx{
+		FindRegistry: func(name string) (*models.Registry, error) {
+			if name == "ghost" {
+				return nil, repoErrNotFound
+			}
+			return &models.Registry{Name: name, Address: "reg.example.com/ns", Username: "u", Password: "p'w"}, nil
+		},
+		FindDefaultRegistry: func() (*models.Registry, error) {
+			return &models.Registry{Name: "def", Address: "def.example.com", Username: "", Password: ""}, nil
+		},
 	}
-	defaultRegistryFinder = func() (*models.Registry, error) {
-		return &models.Registry{Name: "def", Address: "def.example.com", Username: "", Password: ""}, nil
-	}
-	t.Cleanup(func() { registryResolver, defaultRegistryFinder = oldRef, oldDef })
 
 	in := []*models.StepSpec{
 		{Name: "shell", Type: models.StepShell, Script: "echo hi"},
@@ -32,7 +32,7 @@ func TestResolveRegistrySteps(t *testing.T) {
 		{Name: "ghost-ref", Type: models.StepDockerBuild, Image: "app", Registry: "ghost"},
 	}
 
-	out, err := resolveRegistrySteps(in[:4])
+	out, err := resolveRegistrySteps(c, in[:4])
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -60,14 +60,14 @@ func TestResolveRegistrySteps(t *testing.T) {
 	}
 
 	// 档 1 失败路径：引用不存在 → 报错点名步骤与仓库
-	if _, err = resolveRegistrySteps(in[4:]); err == nil {
+	if _, err = resolveRegistrySteps(c, in[4:]); err == nil {
 		t.Errorf("ghost registry ref must fail resolution")
 	}
 
 	// 档 3b：裸名但无默认 → 报错点名（决断 #16：内置 registry 退役后裸名无家可归，
 	// 语义回归"推送目标必须有人站"——登记并设默认，或改用全名）
-	defaultRegistryFinder = func() (*models.Registry, error) { return nil, nil }
-	_, err = resolveRegistrySteps(in[2:3])
+	c.FindDefaultRegistry = func() (*models.Registry, error) { return nil, nil }
+	_, err = resolveRegistrySteps(c, in[2:3])
 	if err == nil {
 		t.Fatalf("bare name without default must fail resolution")
 	}
@@ -75,7 +75,7 @@ func TestResolveRegistrySteps(t *testing.T) {
 		t.Errorf("error must name the bare image: %v", err)
 	}
 	// 对照组：全名在无默认时依旧直通（匿名推，决断 #16 保留档）
-	out2, err := resolveRegistrySteps(in[3:4])
+	out2, err := resolveRegistrySteps(c, in[3:4])
 	if err != nil {
 		t.Fatalf("prefixed no-default resolve: %v", err)
 	}
@@ -84,5 +84,5 @@ func TestResolveRegistrySteps(t *testing.T) {
 	}
 }
 
-// repoErrNotFound —— 与 repo.ErrNotFound 同形的哨兵（测试不 import repo）
+// repoErrNotFound —— 与持久层 ErrNotFound 同形的哨兵（测试不 import repo）
 var repoErrNotFound = errors.New("not found")

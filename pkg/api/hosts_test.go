@@ -13,7 +13,7 @@ import (
 // CRUD 全路径 + 校验 400 族。无 registry 那段 is_default 领域语义，纯名字簿，
 // 不需要共享库快照恢复（只动自己名字空间内的记录）。
 func TestHostsCRUD(t *testing.T) {
-	base := putTestServer(t)
+	base := putTestServer(t, Deps{})
 	nameA := fmt.Sprintf("host-%d-a", time.Now().UnixNano()%100000)
 	defer httpJSON(t, "DELETE", base+"/api/hosts/"+nameA, nil)
 

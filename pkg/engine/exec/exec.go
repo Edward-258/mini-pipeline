@@ -26,6 +26,14 @@ type Ctx struct {
 	Mu       *sync.Mutex
 	Ack      func(*models.WorkflowTask) // 整树写回（engine 注入的无锁版；⚠️ 调用点必须已持 Mu）
 	CancelCh <-chan struct{}            // 取消信号（close 广播；nil = 永不触发）
+
+	// 外部记录的解析依赖：engine 构造 Ctx 时装配持久层真身，单测传 stub——签名即文档。
+	// 解析发生在 driver 编译 / patch 前、每 attempt 一次：凭证只进执行物不进任务档案，
+	// retry/clone 拿到的是集合里的当前值。
+	FindEnv             func(name string) (*models.Env, error)      // deploy 靶标 env 名 → 记录（namespace 取其 Namespace 字段）
+	FindHost            func(name string) (*models.Host, error)     // 远程主机名 → 记录（私钥经驱动脚本投影，档案只存名字引用）
+	FindRegistry        func(name string) (*models.Registry, error) // 推送目标显式引用 → 记录（地址+凭证烘焙进驱动脚本）
+	FindDefaultRegistry func() (*models.Registry, error)            // 全局默认仓库查询（nil,nil = 无默认记录）
 }
 
 // JobCtl —— 三件套（Run/Clean/SaveInfo）。

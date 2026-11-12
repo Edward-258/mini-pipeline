@@ -6,7 +6,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func NewRouter() *gin.Engine {
+// Deps —— 路由层外部依赖的注入点：集群侧副作用以函数字段经构造参数显式传入，
+// api 层不 import 任何具体实现（与全局 var 钩子相比，装配关系在构造调用处一目
+// 了然，测试也不再需要改全局再恢复）。nil 字段 = 未装配（单测路由）= 纯登记
+// 降级：登记操作照常，副作用跳过。
+type Deps struct {
+	// EnsureNamespace 在 env 落库前确保目标 namespace 存在；失败则该次写操作中止
+	// （不变量：落库的 env 其 namespace 必然已存在）
+	EnsureNamespace func(string) error
+	// BuildkitSync 在 registry CRUD 成功后触发一次白名单同步；best-effort——
+	// 失败只记日志不回滚 CRUD（启动 reconcile + 下次 CRUD 自愈），错误处理在真身里
+	BuildkitSync func()
+}
+
+func NewRouter(deps Deps) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/healthz", func(c *gin.Context) {
@@ -37,15 +50,17 @@ func NewRouter() *gin.Engine {
 		api.DELETE("/crons/:name", deleteCron)
 		api.POST("/crons/:name/fire", triggerCron)
 		// T2.1：部署目标环境（env = 名字 → namespace，deploy job 的靶标）
-		api.POST("/envs", createEnv)
+		// createEnv/updateEnv 消费 deps.EnsureNamespace（nil = 纯登记降级），闭包注入
+		api.POST("/envs", func(c *gin.Context) { createEnv(c, deps) })
 		api.GET("/envs", listEnvs)
-		api.PUT("/envs/:name", updateEnv)
+		api.PUT("/envs/:name", func(c *gin.Context) { updateEnv(c, deps) })
 		api.DELETE("/envs/:name", deleteEnv)
 		// 2026-11-07：镜像仓库管理（docker_build 的推送目标；is_default 决定裸名图纸推哪）
-		api.POST("/registries", createRegistry)
+		// create/update/delete 消费 deps.BuildkitSync（nil 即跳过），闭包注入
+		api.POST("/registries", func(c *gin.Context) { createRegistry(c, deps) })
 		api.GET("/registries", listRegistries)
-		api.PUT("/registries/:name", updateRegistry)
-		api.DELETE("/registries/:name", deleteRegistry)
+		api.PUT("/registries/:name", func(c *gin.Context) { updateRegistry(c, deps) })
+		api.DELETE("/registries/:name", func(c *gin.Context) { deleteRegistry(c, deps) })
 		// 2026-11-08：远程主机管理（freestyle job 的 ssh 靶标；私钥投影进 Pod 不落档案）
 		api.POST("/hosts", createHost)
 		api.GET("/hosts", listHosts)

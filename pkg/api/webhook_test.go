@@ -36,7 +36,7 @@ func webhookFixture(t *testing.T, hooks []*models.WebhookConfig) (*gin.Engine, s
 	if err := repo.CreateWorkflow(wf); err != nil {
 		t.Skipf("mongo unavailable, skip: %v", err)
 	}
-	return NewRouter(), wf.Name
+	return NewRouter(Deps{}), wf.Name
 }
 
 func hookRequest(r *gin.Engine, wf, body, sig, event string) *httptest.ResponseRecorder {

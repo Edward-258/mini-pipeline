@@ -94,12 +94,12 @@ func runK8sJobOnce(c *Ctx, jt *models.JobTask) error {
 
 	// 推送目标解析（registry.go）：每次 attempt 一次——凭证不落档案，retry 拿到的是
 	// 仓库记录的当前值。规格非法（含 registry 引用不存在）在这里报，不浪费一次调度
-	steps, err := resolveRegistrySteps(jt.Spec.EffectiveSteps())
+	steps, err := resolveRegistrySteps(c, jt.Spec.EffectiveSteps())
 	if err != nil {
 		return err
 	}
 	// 远程主机解析（hosts.go）：同一时序——私钥只在 host 集合与驱动脚本里，档案只存名字
-	hosts, err := resolveHosts(jt.Spec.Hosts)
+	hosts, err := resolveHosts(c, jt.Spec.Hosts)
 	if err != nil {
 		return err
 	}
