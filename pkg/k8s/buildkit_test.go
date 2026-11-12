@@ -20,7 +20,7 @@ func TestBuildBuildkitToml(t *testing.T) {
 	regs := []*models.Registry{
 		{Name: "local", Address: "http://registry.mp.svc:5000"},
 		{Name: "local-dup", Address: "http://registry.mp.svc:5000"}, // 同 host 去重
-		{Name: "acr", Address: "registry.example-acr.cn"},     // 裸名 = HTTPS 档
+		{Name: "acr", Address: "registry.example-acr.cn"},           // 裸名 = HTTPS 档
 		{Name: "tls", Address: "https://reg.tls.example.com"},       // 显式 https = 不进白名单
 		nil, // 防御：nil 记录不炸
 	}

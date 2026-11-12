@@ -15,18 +15,18 @@ func TestIgnorePolicyBrake(t *testing.T) {
 			{Name: "b", Status: models.StatusCreated},
 		}}
 	}
-	if s := mk(models.ErrorPolicyIgnore); stageBraked(s) || stageHasHardFailure(s) {
+	if s := mk(models.ErrorPolicyIgnore); stageHasHardFailure(s) {
 		t.Error("ignore failure must not brake (serial or stage-level)")
 	}
-	if s := mk(models.ErrorPolicyStop); !stageBraked(s) || !stageHasHardFailure(s) {
+	if s := mk(models.ErrorPolicyStop); !stageHasHardFailure(s) {
 		t.Error("stop failure must brake")
 	}
-	if s := mk(""); !stageBraked(s) || !stageHasHardFailure(s) {
+	if s := mk(""); !stageHasHardFailure(s) {
 		t.Error("unset policy defaults to stop semantics")
 	}
 	s := mk(models.ErrorPolicyIgnore)
 	s.Jobs[0].Status = models.StatusCancelled
-	if !stageBraked(s) || !stageHasHardFailure(s) {
+	if !stageHasHardFailure(s) {
 		t.Error("cancel must brake regardless of policy")
 	}
 }

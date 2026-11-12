@@ -151,7 +151,7 @@ type FreestyleSpec struct {
 	Hosts          []string    `bson:"hosts,omitempty"           json:"hosts,omitempty"`           // 远程主机引用（models.Host 名；driver 编译期投影私钥进 Pod，shell 里直接 ssh <名>）
 }
 
-// 错误策略（T1.9，stop/retry；manual-check 砍进 B5 池）。
+// 错误策略（T1.9：stop / retry / ignore）。
 // 控制/上报分离：策略只改控制流（刹不刹车、重不重试），失败永远如实上报（job/stage 照红）。
 const (
 	ErrorPolicyStop   = "stop"   // 失败即刹车（默认；未设策略的旧图纸同此 + Retry 预算照用）

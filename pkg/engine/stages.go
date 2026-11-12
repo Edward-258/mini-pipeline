@@ -120,7 +120,7 @@ func runStage(tc *taskCtx, t *models.WorkflowTask, st *models.StageTask) {
 		if jt.Status == models.StatusPassed {
 			continue // 同上：重试场景下 passed job 不重跑
 		}
-		if stageBraked(st) {
+		if stageHasHardFailure(st) {
 			jt.Status = models.StatusSkipped // 不再起新的：未启动的直接置 skipped
 			tc.ack(t)
 			continue
@@ -135,21 +135,8 @@ func stageGated(st *models.StageTask) bool {
 	return st.ManualExec != nil && st.ManualExec.Enabled && !st.ManualExec.Executed
 }
 
-// stageBraked —— 串行模式下刹车判断：stage 内存在"硬失败"的 job。
-// T1.9：ignore 策略的失败 job 不算硬失败——记红但继续下一个 job。
-func stageBraked(st *models.StageTask) bool {
-	for _, jt := range st.Jobs {
-		if jt.Status == models.StatusFailed && !isIgnorePolicy(jt) {
-			return true
-		}
-		if jt.Status == models.StatusCancelled { // 取消是最高指令，任何策略都刹
-			return true
-		}
-	}
-	return false
-}
-
-// stageHasHardFailure —— stage 级刹车依据（对照 stageBraked 的 stage 间版本）
+// stageHasHardFailure —— 硬失败判定，stage 内串行刹车与 stage 间刹车的共同依据：
+// failed 且非 ignore（T1.9：ignore 记红但不刹），或 cancelled（取消是最高指令，任何策略都刹）。
 func stageHasHardFailure(st *models.StageTask) bool {
 	for _, jt := range st.Jobs {
 		if (jt.Status == models.StatusFailed && !isIgnorePolicy(jt)) || jt.Status == models.StatusCancelled {

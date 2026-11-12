@@ -23,8 +23,10 @@ var regNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 // ⚠️ 设置默认会静默改变所有裸名图纸的推送目标——前端表单与 README 都要写明。
 //
 // Address 支持可选 scheme 前缀作传输档声明（决断 #16，scheme 显式分派）：
-//   "http://host[:port]" = 明文档（引擎 SyncBuildkitRegistries 把 host 写进 buildkitd 白名单）
-//   "https://..." / 裸 host = buildkitd 默认 HTTPS 公信证书直通（不进白名单，零配置）
+//
+//	"http://host[:port]" = 明文档（引擎 SyncBuildkitRegistries 把 host 写进 buildkitd 白名单）
+//	"https://..." / 裸 host = buildkitd 默认 HTTPS 公信证书直通（不进白名单，零配置）
+//
 // 入库保留原样（声明不丢），消费点（烘焙/白名单键）一律经 NormalizeRegistryAddr 剥掉——
 // docker 镜像引用不收 scheme。
 type Registry struct {

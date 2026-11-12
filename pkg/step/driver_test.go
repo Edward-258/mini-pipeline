@@ -23,14 +23,14 @@ func TestGenerateDriverScript(t *testing.T) {
 	for _, want := range []string{
 		`say "STEP-START $1"`, // banner 前奏
 		`say "STEP-END $1 failed exit=$rc"`,
-		`mp_output() { say "OUTPUT $1"; }`, // T1.2：OUTPUT 产出助手
-		`exit "$rc"`,                       // 失败即停 + 退出码透传
-		"git clone --depth 1 -b 'dev'",      // git 片段
-		`-t 'reg.example.com/demo:1.0'`,     // docker_build 片段（决断 #16：全名直通，内置本地档退役）
+		`mp_output() { say "OUTPUT $1"; }`,                    // T1.2：OUTPUT 产出助手
+		`exit "$rc"`,                                          // 失败即停 + 退出码透传
+		"git clone --depth 1 -b 'dev'",                        // git 片段
+		`-t 'reg.example.com/demo:1.0'`,                       // docker_build 片段（决断 #16：全名直通，内置本地档退役）
 		"===MP=== OUTPUT image_full=reg.example.com/demo:1.0", // 构建成功宣告（下游 deploy 可引用）
-		"cat *.xml",                         // junit 片段
-		"echo hi",                          // shell 片段
-		"mp_run 'checkout' mp_step_1",      // 按序注册
+		"cat *.xml",                   // junit 片段
+		"echo hi",                     // shell 片段
+		"mp_run 'checkout' mp_step_1", // 按序注册
 		"mp_run 'build' mp_step_2",
 		"mp_run 'report' mp_step_3",
 		"mp_run 'hi' mp_step_4",
