@@ -109,7 +109,7 @@ func ValidateWorkflow(wf *Workflow) error {
 					return fmt.Errorf("stage[%d].job[%d]: step %q name must not contain single quotes", i, j, ss.Name)
 				}
 				switch ss.Type {
-				case StepShell, StepGit, StepDockerBuild, StepJunitReport, StepArchive:
+				case StepShell, StepBuild, StepGit, StepDockerBuild, StepJunitReport, StepArchive:
 				default:
 					return fmt.Errorf("stage[%d].job[%d]: unknown step type %q", i, j, ss.Type)
 				}

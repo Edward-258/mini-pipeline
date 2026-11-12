@@ -182,10 +182,11 @@ type StepSpec struct {
 	ArtifactName      string  `bson:"artifact_name,omitempty" json:"artifact_name,omitempty"`           // archive：产物名（默认 <step>.tgz；下载键 = <wf>-<taskID>-<step>）
 }
 
-// 步骤类型（5 种）
+// 步骤类型（6 种；git 已从编辑器用户面退役——clone 唯一化到代码源，见决断 #18）
 const (
-	StepShell       = "shell"        // 任意 shell 片段
-	StepGit         = "git"          // git clone --depth 1
+	StepShell       = "shell"        // 任意 shell 片段（纯轻活：默认 busybox 宿体）
+	StepBuild       = "build"        // 编译构建——shell 语法 + 强制 runner 胖镜像：类型即「需要工具链」的声明位（统一代码源后工具链需求躲进脚本正文，NeedsRunner 对纯 shell 失明；选类型即对账）
+	StepGit         = "git"          // git clone --depth 1（代码源 checkout 合成的内部实现 + 多仓边角）
 	StepDockerBuild = "docker_build" // 共享 buildkitd 构建池（mTLS TCP，决断 #15 的 buildkit 演进）构建 + 推镜像仓库（registry 引用/默认仓库/内置本地三档，见 StepSpec.Registry）
 	StepJunitReport = "junit_report" // 收集 junit XML + 通过率门禁（门禁判定在引擎侧 AfterRun）
 	StepArchive     = "archive"      // T2.4：打包产物 → 上传引擎 GridFS → API 下载（多种归档形态合并为一种）
@@ -207,12 +208,14 @@ func (s *FreestyleSpec) EffectiveSteps() []*StepSpec {
 // busybox 没有的工具——archive 上传依赖 curl，busybox wget --post-file 会截断 POST
 // body）。"哪种步骤需要什么执行环境"是步骤域的知识，归 models；
 // k8s.BuildJob 只消费判定结果选镜像，不再嗅探步骤类型。
+// build（编译构建）是显式声明位：shell 语法 + 强制 runner——把躲进脚本正文的工具链
+// 需求搬回类型标签，选类型即声明，引擎无需读脚本正文。
 func (s *FreestyleSpec) NeedsRunner() bool {
 	if len(s.Hosts) > 0 {
 		return true // ssh 客户端（openssh-client）是 busybox 没有的工具，主机引用强制走 runner
 	}
 	for _, st := range s.EffectiveSteps() {
-		if st.Type == StepGit || st.Type == StepDockerBuild || st.Type == StepArchive {
+		if st.Type == StepBuild || st.Type == StepGit || st.Type == StepDockerBuild || st.Type == StepArchive {
 			return true
 		}
 	}

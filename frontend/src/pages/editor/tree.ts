@@ -11,6 +11,7 @@ export function emptyStep(i: number, type: StepType = 'shell'): StepSpec {
   const base = { name: `step-${i + 1}`, type }
   switch (type) {
     case 'shell': return { ...base, script: '' }
+    case 'build': return { ...base, script: '' } // 编译构建同 shell 字段形状，差异只在宿体镜像档位
     case 'git': return { ...base, repo: '', branch: 'main' }
     case 'docker_build': return { ...base, image: '', tag: 'latest' }
     case 'junit_report': return { ...base, report_glob: '*.xml', pass_rate: 1 }

@@ -6,7 +6,7 @@ export type Status =
   | 'failed' | 'cancelled' | 'skipped' | 'pause'
 
 export type JobType = 'freestyle' | 'deploy'
-export type StepType = 'shell' | 'git' | 'docker_build' | 'junit_report' | 'archive'
+export type StepType = 'shell' | 'build' | 'git' | 'docker_build' | 'junit_report' | 'archive'
 export type ErrorPolicy = 'stop' | 'retry' | 'ignore'
 export type ApprovePolicy = 'any' | 'all'
 

@@ -12,10 +12,12 @@ import type { Registry, StepSpec, StepType } from '../../types'
 
 const { Text } = Typography
 
-// 类型切换四选一：git 不在列（clone 唯一化到代码源，见 JobDrawer STEP_ADD_OPTIONS 注）；
-// git 字段的渲染分支保留——存量档案与 JSON 逃生舱的 git 步骤照常显形
+// 类型切换五选一：git 不在列（clone 唯一化到代码源，见 JobDrawer STEP_ADD_OPTIONS 注）；
+// git 字段的渲染分支保留——存量档案与 JSON 逃生舱的 git 步骤照常显形。
+// 编译构建（build）与 shell 同语法共用编辑面，差异只在宿体镜像档位。
 const STEP_TYPES: { value: StepType; label: string }[] = [
   { value: 'shell', label: 'shell 脚本' },
+  { value: 'build', label: '编译构建' },
   { value: 'docker_build', label: '镜像构建' },
   { value: 'junit_report', label: '测试报告' },
   { value: 'archive', label: '产物归档' },
@@ -93,7 +95,7 @@ export default function StepForm({ step, index, total, registries, nsOptions, on
         </Button.Group>
       </Space>
 
-      {step.type === 'shell' && (
+      {(step.type === 'shell' || step.type === 'build') && ( // 编译构建与 shell 同语法，共用编辑面（差异只在宿体镜像档位）
         <>
           <TermEditor
             rows={7} value={step.script} placeholder={'#!/bin/sh\necho hello'}

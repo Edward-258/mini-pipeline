@@ -22,6 +22,10 @@ type StepCtl interface {
 
 func newStepCtl(spec *models.StepSpec) StepCtl {
 	switch spec.Type {
+	case models.StepBuild:
+		// 编译构建与 shell 同语法，差异只在宿体镜像档位（NeedsRunner 的显式声明位）——
+		// 显式 case 而非依赖 default 回落：未来 shellCtl 行为演化时不会静默耦合
+		return &shellCtl{spec: spec}
 	case models.StepGit:
 		return &gitCtl{spec: spec}
 	case models.StepDockerBuild:
