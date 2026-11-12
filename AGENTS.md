@@ -205,8 +205,9 @@ export MONGO_URI="mongodb://root:<密码>@localhost:27017" K8S_CONTEXT=k3s-heyua
 kubectl --context k3s-heyuan get pods -n pipeline
 kubectl --context k3s-heyuan get jobs -n pipeline        # 验收：mp-N-… 出现又消失
 
-# ===== 直连集群里的 Mongo 看数据 =====
-kubectl exec -i -n pipeline deploy/mongo -- mongosh -u root -p mini-pipeline-2026 --quiet <<'EOF'
+# ===== 直连集群里的 Mongo 看数据（密码从 mongo-auth Secret 现场取，不进仓——决断 #16） =====
+MPW=$(kubectl --context k3s-heyuan -n pipeline get secret mongo-auth -o jsonpath='{.data.password}' | base64 -d)
+kubectl exec -i -n pipeline deploy/mongo -- mongosh -u root -p "$MPW" --quiet <<'EOF'
 db = db.getSiblingDB("pipeline")
 printjson(db.getCollectionNames())
 EOF
