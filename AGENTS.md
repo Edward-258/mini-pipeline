@@ -193,6 +193,7 @@ go test ./pkg/... -count=1                                                      
 # ===== git 远端（GitHub，public；旧史存档仓只读，见决断 #19） =====
 git push   # GCM 凭证桥已配在仓库 local config，裸敲即可（首次会弹 Windows 登录窗）
 git config --get mini-pipeline.archive-repo   # 旧史存档仓地址（考古：临时 clone 它，永不 fetch 进本仓、永不 push tags）
+# commit message 口径（用户 2026-11-12 拍板）：简短低调（如「chore: 收口」），不写长叙事、不点名问题细节
 
 # ===== 本机调试（引擎跑本机，连集群 mongo/创建集群 Job） =====
 kubectl --context k3s-heyuan port-forward -n pipeline svc/mongo 27017:27017   # 窗口A
